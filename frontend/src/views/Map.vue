@@ -4,8 +4,8 @@ import { api } from '../api'
 const data = ref<any>(null)
 const candidates = ref<any[]>([])
 const violKeys = ref<Set<string>>(new Set())
-async function run() {
-  data.value = await api('/seating/run?hall_id=1', { method: 'POST' })
+const noGeneration = ref(false)
+async function loadViolations() {
   try {
     const v = await api('/seating/violations?hall_id=1')
     const keys = new Set<string>()
@@ -16,9 +16,27 @@ async function run() {
     violKeys.value = keys
   } catch { violKeys.value = new Set() }
 }
+async function run() {
+  noGeneration.value = false
+  data.value = await api('/seating/run?hall_id=1', { method: 'POST' })
+  await loadViolations()
+}
+async function loadLatest() {
+  // 只读当前指针世代，绝不触发重排
+  try {
+    data.value = await api('/seating/latest?hall_id=1')
+    await loadViolations()
+  } catch (e: any) {
+    if (e?.status === 404) {
+      noGeneration.value = true
+    } else {
+      throw e
+    }
+  }
+}
 onMounted(async () => {
   candidates.value = await api('/candidates')
-  await run()
+  await loadLatest()
 })
 const gridStyle = computed(() => data.value ? ({ gridTemplateColumns: `repeat(${data.value.cols}, 72px)` }) : {})
 const cells = computed(() => {
@@ -45,8 +63,14 @@ function paperClass(pid: number) {
 <template>
   <h1>考场课桌网格</h1>
   <p class="sub">课桌网格为主视图 · 左侧考生名册夹板 · 违规课桌高亮</p>
-  <button class="btn" @click="run">重新排座</button>
-  <div class="hs-classroom" style="margin-top:0.85rem">
+  <div style="display:flex;align-items:center;gap:.75rem">
+    <button class="btn" @click="run">重新排座</button>
+    <span v-if="data" class="muted">当前世代 #{{ data.generation }}（只展示指针所指世代）</span>
+  </div>
+  <div class="card" v-if="noGeneration" style="margin-top:.85rem">
+    尚无已落代的排座，点击「重新排座」生成第一代。
+  </div>
+  <div class="hs-classroom" style="margin-top:0.85rem" v-else>
     <aside class="hs-clipboard">
       <h2>考生名册</h2>
       <div v-for="c in candidates" :key="c.id" class="hs-roster-row">
