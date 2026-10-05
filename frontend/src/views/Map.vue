@@ -2,23 +2,24 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 const data = ref<any>(null)
+const noPlan = ref(false)
 const candidates = ref<any[]>([])
-const violKeys = ref<Set<string>>(new Set())
+async function refresh() {
+  try {
+    data.value = await api('/seating/current?hall_id=1')
+    noPlan.value = false
+  } catch {
+    data.value = null
+    noPlan.value = true
+  }
+}
 async function run() {
   data.value = await api('/seating/run?hall_id=1', { method: 'POST' })
-  try {
-    const v = await api('/seating/violations?hall_id=1')
-    const keys = new Set<string>()
-    for (const x of v.violations || []) {
-      if (x.a_id != null) keys.add(String(x.a_id))
-      if (x.b_id != null) keys.add(String(x.b_id))
-    }
-    violKeys.value = keys
-  } catch { violKeys.value = new Set() }
+  noPlan.value = false
 }
 onMounted(async () => {
   candidates.value = await api('/candidates')
-  await run()
+  await refresh()
 })
 const gridStyle = computed(() => data.value ? ({ gridTemplateColumns: `repeat(${data.value.cols}, 72px)` }) : {})
 const cells = computed(() => {
@@ -33,6 +34,15 @@ const cells = computed(() => {
   }
   return out
 })
+// 违规高亮与网格出自同一份响应,天然同一代
+const violKeys = computed(() => {
+  const keys = new Set<string>()
+  for (const x of data.value?.violations || []) {
+    if (x.a_id != null) keys.add(String(x.a_id))
+    if (x.b_id != null) keys.add(String(x.b_id))
+  }
+  return keys
+})
 function isViol(cell: any) {
   if (cell.empty) return false
   const id = cell.candidate_id ?? cell.id
@@ -46,7 +56,9 @@ function paperClass(pid: number) {
   <h1>考场课桌网格</h1>
   <p class="sub">课桌网格为主视图 · 左侧考生名册夹板 · 违规课桌高亮</p>
   <button class="btn" @click="run">重新排座</button>
-  <div class="hs-classroom" style="margin-top:0.85rem">
+  <span v-if="data" class="muted" style="margin-left:0.75rem">当前第 {{ data.generation }} 代</span>
+  <p v-if="noPlan" class="muted" style="margin-top:0.85rem">尚未排座,点击「重新排座」生成第一代。</p>
+  <div class="hs-classroom" style="margin-top:0.85rem" v-if="data">
     <aside class="hs-clipboard">
       <h2>考生名册</h2>
       <div v-for="c in candidates" :key="c.id" class="hs-roster-row">
@@ -57,7 +69,7 @@ function paperClass(pid: number) {
         <div>卷{{ c.paper_id }}</div>
       </div>
     </aside>
-    <div class="hs-desk-stage" v-if="data">
+    <div class="hs-desk-stage">
       <div class="hs-grid-board" :style="gridStyle">
         <div
           v-for="(cell,i) in cells" :key="i"

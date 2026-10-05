@@ -3,15 +3,21 @@ import { onMounted, ref } from 'vue'
 import { api } from '../api'
 const viols = ref<any[]>([])
 const unplaced = ref<any[]>([])
+const generation = ref<number | null>(null)
+const noPlan = ref(false)
 onMounted(async () => {
-  const res = await api('/seating/violations?hall_id=1')
-  viols.value = res.violations; unplaced.value = res.unplaced
+  try {
+    const res = await api('/seating/violations?hall_id=1')
+    viols.value = res.violations; unplaced.value = res.unplaced
+    generation.value = res.generation
+  } catch { noPlan.value = true }
 })
 </script>
 <template>
   <h1>违规</h1>
-  <p class="sub">间距不足或同试卷四邻相邻</p>
-  <div class="card">
+  <p class="sub">间距不足或同试卷四邻相邻<span v-if="generation != null"> · 第 {{ generation }} 代</span></p>
+  <p v-if="noPlan" class="muted">尚未排座。</p>
+  <div class="card" v-else>
     <table>
       <thead><tr><th>类型</th><th>考生A</th><th>考生B</th><th>说明</th></tr></thead>
       <tbody>

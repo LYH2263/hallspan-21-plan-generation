@@ -1,41 +1,65 @@
-import json
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models.models import Candidate, Hall, SeatPlan
-from app.services.seat_engine import find_violations, place_candidates, plan_to_dict
+from app.services import seating_store
+
 router = APIRouter(prefix="/seating", tags=["seating"])
+
 
 @router.post("/run")
 def run_seating(hall_id: int = 1, db: Session = Depends(get_db)):
-    hall = db.get(Hall, hall_id)
-    if not hall: raise HTTPException(404, "考室不存在")
-    cands = [{"id": c.id, "name": c.name, "ticket_no": c.ticket_no, "paper_id": c.paper_id}
-             for c in db.scalars(select(Candidate).where(Candidate.hall_id == hall_id)).all()]
-    assigns, unplaced = place_candidates(hall.rows, hall.cols, hall.min_manhattan, cands)
-    viols = find_violations(hall.rows, hall.cols, hall.min_manhattan, assigns)
-    result = plan_to_dict(assigns, unplaced, viols, hall.rows, hall.cols)
-    result["hall"] = {"id": hall.id, "name": hall.name, "min_manhattan": hall.min_manhattan}
-    plan = SeatPlan(hall_id=hall_id, created_at=datetime.utcnow(), result_json=json.dumps(result, ensure_ascii=False))
-    db.add(plan); db.commit(); db.refresh(plan)
-    return {"id": plan.id, **result}
+    """排座一次:成功则落一代快照并拨指针;失败则什么都不留下。"""
+    try:
+        return seating_store.run_generation(db, hall_id)
+    except seating_store.HallNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except seating_store.SeatingFailedError as e:
+        raise HTTPException(500, f"排座失败,未留下任何踪迹:{e}")
 
-@router.get("/latest")
-def latest(hall_id: int = 1, db: Session = Depends(get_db)):
-    plan = db.scalars(select(SeatPlan).where(SeatPlan.hall_id == hall_id).order_by(SeatPlan.id.desc())).first()
-    if not plan:
-        return run_seating(hall_id=hall_id, db=db)
-    data = json.loads(plan.result_json)
-    return {"id": plan.id, **data}
+
+@router.get("/current")
+def current(hall_id: int = 1, db: Session = Depends(get_db)):
+    """排座图:只展示指针所指世代;从未排座则 404,绝不顺手排一把。"""
+    try:
+        data = seating_store.current_view(db, hall_id)
+    except seating_store.ReadModelMisalignedError as e:
+        raise HTTPException(500, str(e))
+    if data is None:
+        raise HTTPException(404, "该考室尚未排座")
+    return data
+
 
 @router.get("/violations")
 def violations(hall_id: int = 1, db: Session = Depends(get_db)):
-    data = latest(hall_id=hall_id, db=db)
-    return {"hall_id": hall_id, "violations": data.get("violations", []), "unplaced": data.get("unplaced", [])}
+    try:
+        data = seating_store.current_violations(db, hall_id)
+    except seating_store.ReadModelMisalignedError as e:
+        raise HTTPException(500, str(e))
+    if data is None:
+        raise HTTPException(404, "该考室尚未排座")
+    return {"hall_id": hall_id, **data}
+
 
 @router.get("/stats")
 def stats(hall_id: int = 1, db: Session = Depends(get_db)):
-    data = latest(hall_id=hall_id, db=db)
-    return {"hall_id": hall_id, **data.get("stats", {})}
+    try:
+        data = seating_store.current_stats(db, hall_id)
+    except seating_store.ReadModelMisalignedError as e:
+        raise HTTPException(500, str(e))
+    if data is None:
+        raise HTTPException(404, "该考室尚未排座")
+    return {"hall_id": hall_id, **data}
+
+
+@router.get("/generations")
+def generations(hall_id: int = 1, db: Session = Depends(get_db)):
+    return {"hall_id": hall_id, "generations": seating_store.list_generations(db, hall_id)}
+
+
+@router.get("/generations/{generation}")
+def generation(generation: int, hall_id: int = 1, db: Session = Depends(get_db)):
+    """读旧世代:只回快照,不重算、不写行、不动指针。"""
+    data = seating_store.generation_snapshot(db, hall_id, generation)
+    if data is None:
+        raise HTTPException(404, f"考室 {hall_id} 没有第 {generation} 代快照")
+    return data
